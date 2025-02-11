@@ -3,47 +3,48 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"strings"
 
-	"sermersys/googlesearch" // Импортируем наш модуль поиска
+	"sermersys/googlesearch" // Importing the search module
 )
 
-// RequestData - структура данных для API-запроса
-type RequestData struct {
-	HotelName    string `json:"hotel_name"`
-	Address      string `json:"address,omitempty"`
-	City         string `json:"city"`
-	Country      string `json:"country"`
-	PlatformsFile string `json:"platforms_file"`
-}
-
-// API-обработчик, принимает JSON-запрос, запускает поиск и возвращает результат
+// API handler that accepts a JSON request, starts the search, and returns the result
 func searchHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Разбираем JSON из запроса
-	var requestData RequestData
-	err := json.NewDecoder(r.Body).Decode(&requestData)
+	// Read the raw request body
+	body, err := io.ReadAll(r.Body) // Replaced ioutil.ReadAll with io.ReadAll
 	if err != nil {
-		http.Error(w, "Ошибка разбора JSON", http.StatusBadRequest)
+		http.Error(w, "Error reading request body", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Запущен анализ: %+v\n", requestData)
+	log.Println("Raw JSON received:", string(body)) // Log raw JSON for debugging
 
-	// Вызываем `FetchData` из `search.go`
-	filename, result, err := search.FetchData(requestData)
+	// Parse JSON from request
+	var requestData googlesearch.RequestData
+	err = json.Unmarshal(body, &requestData)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Ошибка анализа: %v", err), http.StatusInternalServerError)
+		log.Println("JSON Parsing Error:", err) // Log the parsing error
+		http.Error(w, "Error parsing JSON", http.StatusBadRequest)
 		return
 	}
 
-	// Возвращаем JSON-ответ
+	log.Printf("Parsed Request Data: %+v\n", requestData)
+
+	// Call FetchData
+	filename, result, err := googlesearch.FetchData(requestData)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Analysis error: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Return JSON response
 	response := map[string]interface{}{
 		"filename": filename,
 		"results":  result,
@@ -52,35 +53,58 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// Веб-страница для запроса данных у пользователя
+// Web page for user data input
 func homeHandler(w http.ResponseWriter, r *http.Request) {
 	html := `
-	<html>
-		<head><title>Анализатор отзывов</title></head>
-		<body>
-			<h2>Введите данные для анализа:</h2>
-			<form action="/search" method="POST">
-				<label>Тип объекта:</label>
-				<select name="platforms_file">
-					<option value="platforms1.txt">Кафе</option>
-					<option value="platforms2.txt">Отель</option>
-				</select><br><br>
-				<label>Название объекта:</label> <input type="text" name="hotel_name" required><br><br>
-				<label>Адрес (необязательно):</label> <input type="text" name="address"><br><br>
-				<label>Город:</label> <input type="text" name="city" required><br><br>
-				<label>Страна:</label> <input type="text" name="country" required><br><br>
-				<input type="submit" value="Запустить анализ">
-			</form>
-		</body>
-	</html>`
+<html>
+	<head><title>Review Analyzer</title></head>
+	<body>
+		<h2>Enter data for analysis:</h2>
+		<form id="analyzeForm">
+			<label>Object Type:</label>
+			<select id="platforms_file">
+				<option value="platform1.txt">Cafe</option>
+				<option value="platform2.txt">Hotel</option>
+			</select><br><br>
+			<label>Object Name:</label> <input type="text" id="hotel_name" required><br><br>
+			<label>Address (optional):</label> <input type="text" id="address"><br><br>
+			<label>City:</label> <input type="text" id="city" required><br><br>
+			<label>Country:</label> <input type="text" id="country" required><br><br>
+			<button type="button" onclick="sendRequest()">Start Analysis</button>
+		</form>
+
+		<script>
+			function sendRequest() {
+				const data = {
+					platforms_file: document.getElementById("platforms_file").value,
+					hotel_name: document.getElementById("hotel_name").value,
+					address: document.getElementById("address").value,
+					city: document.getElementById("city").value,
+					country: document.getElementById("country").value
+				};
+
+				fetch('/search', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(data)
+				}).then(response => response.json())
+				  .then(result => console.log(result))
+				  .catch(error => console.error('Error:', error));
+			}
+		</script>
+	</body>
+</html>
+`
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html))
 }
 
 func main() {
-	http.HandleFunc("/", homeHandler)  // Страница ввода
-	http.HandleFunc("/search", searchHandler) // Обработчик API
+	http.HandleFunc("/", homeHandler)  // Input page
+	http.HandleFunc("/search", searchHandler) // API handler
 
-	log.Println("Сервер запущен на порту 7001")
+	log.Println("Server started on port 7001")
 	log.Fatal(http.ListenAndServe(":7001", nil))
 }
