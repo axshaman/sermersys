@@ -1,0 +1,10 @@
+tripadvisor.com
+booking.com
+expedia.com
+hotels.com
+agoda.com
+kayak.com
+priceline.com
+skyscanner.com
+trip.com
+trivago.com

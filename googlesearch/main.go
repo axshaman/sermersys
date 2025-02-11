@@ -1,4 +1,4 @@
-package main
+package search
 
 import (
 	"encoding/csv"
@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,20 +13,30 @@ import (
 	"time"
 )
 
-// CustomSearchResponse - структура для парсинга ответа от Google Custom Search API
+// RequestData - структура входных данных
+type RequestData struct {
+	HotelName    string `json:"hotel_name"`
+	Address      string `json:"address,omitempty"`
+	City         string `json:"city"`
+	Country      string `json:"country"`
+	PlatformsFile string `json:"platforms_file"`
+}
+
+// CustomSearchResponse - структура ответа от Google CSE
 type CustomSearchResponse struct {
 	Items []struct {
-		Title string `json:"title"`
-		Link  string `json:"link"`
+		Title   string `json:"title"`
+		Link    string `json:"link"`
+		Snippet string `json:"snippet"`
 	} `json:"items"`
 }
 
-// PlaceDetails - структура для данных из Google Places API
+// PlaceDetails - структура ответа от Google Places API
 type PlaceDetails struct {
 	Result struct {
-		Name             string `json:"name"`
+		Name             string  `json:"name"`
 		Rating           float64 `json:"rating"`
-		UserRatingsTotal int    `json:"user_ratings_total"`
+		UserRatingsTotal int     `json:"user_ratings_total"`
 		Reviews          []struct {
 			AuthorName string `json:"author_name"`
 			Rating     int    `json:"rating"`
@@ -36,61 +45,47 @@ type PlaceDetails struct {
 	} `json:"result"`
 }
 
-// Config - структура для загрузки API-ключей из файла
+// Config - структура конфигурации
 type Config struct {
 	GoogleAPIKey string `json:"google_api_key"`
 	GoogleCX     string `json:"google_cx"`
 }
 
-// Список платформ для поиска
-var platforms = []string{
-	"tripadvisor.com",
-	"booking.com",
-	"expedia.com",
-	"hotels.com",
-	"agoda.com",
-	"kayak.com",
-	"priceline.com",
-	"skyscanner.com",
-	"trip.com",
-}
-
-func main() {
-	// Загружаем конфиг
+// FetchData - выполняет поиск, записывает CSV и возвращает JSON-ответ
+func FetchData(data RequestData) (string, []map[string]string, error) {
 	config, err := loadConfig("config.json")
 	if err != nil {
-		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
+		return "", nil, fmt.Errorf("Ошибка загрузки конфигурации: %v", err)
 	}
 
-	// Данные об отеле
-	anName := "Abion Ameron Berlin"
-	city := "Berlin"
-	country := "Germany"
+	platforms, err := loadPlatforms(data.PlatformsFile)
+	if err != nil {
+		return "", nil, fmt.Errorf("Ошибка загрузки платформ: %v", err)
+	}
 
-	query := buildQuery(anName, city, country)
+	query := buildQuery(data.HotelName, data.City, data.Country)
 
-	// Создание имени файла
+	// Создаём CSV-файл
 	timestamp := time.Now().Format("150405020106")
-	filename := fmt.Sprintf("%s-%s.csv", timestamp, strings.ReplaceAll(anName, " ", "_"))
-
-	// Открываем CSV-файл
+	filename := fmt.Sprintf("%s-%s.csv", timestamp, strings.ReplaceAll(data.HotelName, " ", "_"))
 	file, err := os.Create(filename)
 	if err != nil {
-		log.Fatalf("Ошибка создания файла: %v", err)
+		return "", nil, fmt.Errorf("Ошибка создания файла: %v", err)
 	}
 	defer file.Close()
 
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
+	writer.Write([]string{"Platform", "Title", "Link", "Rating", "User Ratings", "Review Author", "Review Rating", "Review Text"})
 
-	// Получаем данные из Google Places API
-	details, err := getPlaceDetails(config.GoogleAPIKey, anName, city)
+	// Получаем рейтинг и отзывы из Google Places API
+	details, err := getPlaceDetails(config.GoogleAPIKey, data.HotelName, data.City)
 	if err != nil {
 		log.Println("Ошибка при получении данных из Google Places API:", err)
 	}
 
-	writer.Write([]string{"Platform", "Title", "Link", "Rating", "User Ratings Total", "Review Author", "Review Rating", "Review Text"})
-
+	// Запускаем поиск по 3 страницам
+	results := []map[string]string{}
 	for i := 0; i < len(platforms); i += 5 {
 		end := i + 5
 		if end > len(platforms) {
@@ -99,14 +94,10 @@ func main() {
 
 		platformSubset := platforms[i:end]
 		searchQuery := buildSearchQuery(query, platformSubset)
-		links := findLinksGoogleCSE(searchQuery, config.GoogleAPIKey, config.GoogleCX, platformSubset, anName, 3)
+		links := findLinksGoogleCSE(searchQuery, config.GoogleAPIKey, config.GoogleCX, platformSubset, data.HotelName, 3)
 
 		for platform, item := range links {
-			rating := ""
-			userRatingsTotal := ""
-			reviewAuthor := ""
-			reviewRating := ""
-			reviewText := ""
+			rating, userRatingsTotal, reviewAuthor, reviewRating, reviewText := "", "", "", "", ""
 
 			if details != nil {
 				rating = fmt.Sprintf("%.1f", details.Result.Rating)
@@ -120,54 +111,30 @@ func main() {
 				}
 			}
 
+			entry := map[string]string{
+				"platform":        platform,
+				"title":           item.Title,
+				"link":            item.Link,
+				"rating":          rating,
+				"user_ratings":    userRatingsTotal,
+				"review_author":   reviewAuthor,
+				"review_rating":   reviewRating,
+				"review_text":     reviewText,
+			}
+			results = append(results, entry)
 			writer.Write([]string{platform, item.Title, item.Link, rating, userRatingsTotal, reviewAuthor, reviewRating, reviewText})
 		}
 	}
 
 	log.Println("Данные успешно сохранены в файл:", filename)
+	return filename, results, nil
 }
 
-// loadConfig загружает API-ключи из config.json
-func loadConfig(filename string) (*Config, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	data, err := ioutil.ReadAll(file)
-	if err != nil {
-		return nil, err
-	}
-
-	var config Config
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
-
-	return &config, nil
-}
-
-// buildQuery формирует строку запроса
-func buildQuery(anName, city, country string) string {
-	return fmt.Sprintf("%s %s %s", anName, city, country)
-}
-
-// buildSearchQuery формирует строку запроса с site:
-func buildSearchQuery(query string, platforms []string) string {
-	var siteFilters []string
-	for _, platform := range platforms {
-		siteFilters = append(siteFilters, fmt.Sprintf("site:%s", platform))
-	}
-	return strings.Join(siteFilters, " OR ") + " " + query
-}
-
-// findLinksGoogleCSE ищет ссылки через Google Custom Search API
-func findLinksGoogleCSE(query, apiKey, cx string, platforms []string, anName string, maxPages int) map[string]struct{ Title, Link string } {
+// findLinksGoogleCSE - выполняет поиск через Google CSE
+func findLinksGoogleCSE(query, apiKey, cx string, platforms []string, hotelName string, maxPages int) map[string]struct{ Title, Link string } {
 	baseURL := "https://www.googleapis.com/customsearch/v1"
 	links := make(map[string]struct{ Title, Link string })
-
-	hotelWords := strings.Fields(strings.ToLower(anName))
+	hotelWords := strings.Fields(strings.ToLower(hotelName))
 
 	for start := 1; start <= maxPages*10; start += 10 {
 		u, _ := url.Parse(baseURL)
@@ -202,45 +169,56 @@ func findLinksGoogleCSE(query, apiKey, cx string, platforms []string, anName str
 	return links
 }
 
-// checkTitle проверяет, есть ли ключевые слова в заголовке
-func checkTitle(title string, words []string) bool {
-	if len(words) == 1 {
-		return strings.Contains(title, words[0])
-	}
-
-	rand.Seed(time.Now().UnixNano())
-	rand.Shuffle(len(words), func(i, j int) { words[i], words[j] = words[j], words[i] })
-
-	for i := 0; i < len(words); i++ {
-		for j := i + 1; j < len(words); j++ {
-			if strings.Contains(title, words[i]) && strings.Contains(title, words[j]) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// getPlaceDetails получает рейтинг и отзывы из Google Places API
+// getPlaceDetails получает данные из Google Places API
 func getPlaceDetails(apiKey, hotelName, city string) (*PlaceDetails, error) {
-	placeID := getPlaceID(apiKey, hotelName, city)
-	if placeID == "" {
-		return nil, fmt.Errorf("Place ID not found")
-	}
-
 	u, _ := url.Parse("https://maps.googleapis.com/maps/api/place/details/json")
 	q := u.Query()
 	q.Set("key", apiKey)
-	q.Set("place_id", placeID)
-	q.Set("fields", "name,rating,user_ratings_total,reviews")
+	q.Set("input", fmt.Sprintf("%s, %s", hotelName, city))
+	q.Set("inputtype", "textquery")
+	q.Set("fields", "place_id")
 	u.RawQuery = q.Encode()
 
-	resp, _ := http.Get(u.String())
+	resp, err := http.Get(u.String())
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Ошибка запроса к Google Places API: %v", err)
+	}
 	defer resp.Body.Close()
 
 	body, _ := ioutil.ReadAll(resp.Body)
-	var placeDetails PlaceDetails
-	json.Unmarshal(body, &placeDetails)
+	var details PlaceDetails
+	json.Unmarshal(body, &details)
 
-	return &placeDetails, nil
+	return &details, nil
+}
+
+// Дополнительные функции
+func loadConfig(filename string) (*Config, error) {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	var config Config
+	err = json.Unmarshal(data, &config)
+	if err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+func loadPlatforms(filename string) ([]string, error) {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	return lines, nil
+}
+
+func buildSearchQuery(query string, platforms []string) string {
+	var siteFilters []string
+	for _, platform := range platforms {
+		siteFilters = append(siteFilters, fmt.Sprintf("site:%s", platform))
+	}
+	return strings.Join(siteFilters, " OR ") + " " + query
 }
