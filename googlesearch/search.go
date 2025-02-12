@@ -15,10 +15,10 @@ import (
 
 // RequestData - структура входных данных
 type RequestData struct {
-	HotelName    string `json:"hotel_name"`
-	Address      string `json:"address,omitempty"`
-	City         string `json:"city"`
-	Country      string `json:"country"`
+	HotelName     string `json:"hotel_name"`
+	Address       string `json:"address,omitempty"`
+	City          string `json:"city"`
+	Country       string `json:"country"`
 	PlatformsFile string `json:"platforms_file"`
 }
 
@@ -34,7 +34,7 @@ type CustomSearchResponse struct {
 // PlaceDetails - структура ответа от Google Places API
 type PlaceDetails struct {
 	Result struct {
-		Name             string  `json:"name"`
+		Name             string `json:"name"`
 		Rating           float64 `json:"rating"`
 		UserRatingsTotal int     `json:"user_ratings_total"`
 		Reviews          []struct {
@@ -53,12 +53,12 @@ type Config struct {
 
 // FetchData - выполняет поиск, записывает CSV и возвращает JSON
 func FetchData(data RequestData) (string, []map[string]string, error) {
-	config, err := loadConfig("./googlesearch/config.json")
+	config, err := loadConfig("./config.json")
 	if err != nil {
 		return "", nil, fmt.Errorf("Ошибка загрузки конфигурации: %v", err)
 	}
 
-	platforms, err := loadPlatforms("./googlesearch/" + data.PlatformsFile)
+	platforms, err := loadPlatforms(data.PlatformsFile)
 	if err != nil {
 		return "", nil, fmt.Errorf("Ошибка загрузки платформ: %v", err)
 	}
@@ -67,7 +67,7 @@ func FetchData(data RequestData) (string, []map[string]string, error) {
 
 	// Создаём CSV-файл
 	timestamp := time.Now().Format("20060102150405")
-	filename := fmt.Sprintf("%s-%s.csv", timestamp, strings.ReplaceAll(data.HotelName, " ", "_"))
+	filename := fmt.Sprintf("./results/%s-%s.csv", timestamp, strings.ReplaceAll(data.HotelName, " ", "_"))
 	file, err := os.Create(filename)
 	if err != nil {
 		return "", nil, fmt.Errorf("Ошибка создания файла: %v", err)
@@ -84,7 +84,7 @@ func FetchData(data RequestData) (string, []map[string]string, error) {
 		log.Println("Ошибка при получении данных из Google Places API:", err)
 	}
 
-	// Запускаем поиск по 3 страницам
+	// Запускаем поиск по платформам
 	results := []map[string]string{}
 	for i := 0; i < len(platforms); i += 5 {
 		end := i + 5
@@ -234,6 +234,7 @@ func buildSearchQuery(query string, platforms []string) string {
 	}
 	return strings.Join(siteFilters, " OR ") + " " + query
 }
+
 // getPlaceDetails получает информацию о месте из Google Places API
 func getPlaceDetails(apiKey, hotelName, city string) (*PlaceDetails, error) {
 	baseURL := "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"

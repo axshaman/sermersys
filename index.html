@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Analyzer</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #f4f4f4;
+            text-align: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            max-width: 500px;
+            margin: auto;
+        }
+        h2 {
+            color: #333;
+        }
+        label {
+            display: block;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+        input, select, button {
+            width: 100%;
+            padding: 10px;
+            margin-top: 5px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            background: #007BFF;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 15px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .result-container {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        .result-item {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+        }
+        .download-link {
+            display: block;
+            margin-top: 15px;
+            font-size: 16px;
+            color: #007BFF;
+            text-decoration: none;
+        }
+        .download-link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2><i class="fa fa-search"></i> Search Analyzer</h2>
+        <form id="analyzeForm">
+            <label>Type of object:</label>
+            <select id="platforms_file">
+                <option value="platform1.txt">Cafe</option>
+                <option value="platform2.txt">Hotel</option>
+            </select>
+
+            <label>Object Name:</label>
+            <input type="text" id="object_name" required>
+
+            <label>Address (optional):</label>
+            <input type="text" id="address">
+
+            <label>City:</label>
+            <input type="text" id="city" required>
+
+            <label>Country:</label>
+            <input type="text" id="country" required>
+
+            <button type="button" onclick="sendRequest()">Start Analysis</button>
+        </form>
+    </div>
+
+    <div id="resultContainer" class="result-container">
+        <h3>Analysis Results</h3>
+        <p><strong>Refined Name:</strong> <span id="refinedHotelName"></span></p>
+        <p><strong>Refined Address:</strong> <span id="refinedAddress"></span></p>
+        <div id="results"></div>
+        <a id="downloadLink" class="download-link" target="_blank"><i class="fa fa-download"></i> Download Results</a>
+    </div>
+
+    <script>
+        function sendRequest() {
+            const data = {
+                platforms_file: document.getElementById("platforms_file").value,
+                object_name: document.getElementById("object_name").value,
+                address: document.getElementById("address").value,
+                city: document.getElementById("city").value,
+                country: document.getElementById("country").value
+            };
+
+            fetch('/process', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            }).then(response => response.json())
+            .then(result => {
+                    document.getElementById("resultContainer").style.display = 'block';
+                    document.getElementById("refinedHotelName").innerText = result.refined_hotel_name || "N/A"; // Добавлено
+                    document.getElementById("refinedAddress").innerText = result.refined_address || "N/A";
+
+                    const resultsDiv = document.getElementById("results");
+                    resultsDiv.innerHTML = "";
+                    result.search_results.forEach(item => {
+                        resultsDiv.innerHTML += `<div class="result-item">
+                            <strong>${item.platform}</strong>: <a href="${item.link}" target="_blank">${item.title}</a>
+                            <br>Rating: ${item.rating} (${item.user_ratings} reviews)
+                        </div>`;
+                    });
+
+                    if (result.filename) {
+                        document.getElementById("downloadLink").href = `/download?file=${encodeURIComponent(result.filename)}`;
+                        document.getElementById("downloadLink").style.display = "block";
+                    }
+                })
+
+              .catch(error => console.error('Error:', error));
+        }
+    </script>
+
+</body>
+</html>

@@ -1,1 +1,3 @@
-googlesearch/config.json
+config.json
+/results/
+/results/**

@@ -6,105 +6,147 @@ import (
 	"io"
 	"log"
 	"net/http"
-
-	"sermersys/googlesearch" // Importing the search module
+	"sermersys/googlesearch"
+	"sermersys/mapsearchg"
+	"time"
+	"path/filepath"
 )
 
-// API handler that accepts a JSON request, starts the search, and returns the result
-func searchHandler(w http.ResponseWriter, r *http.Request) {
+// Структура ответа API
+type APIResponse struct {
+	RefinedHotelName string              `json:"refined_hotel_name"` // Добавлено уточнённое имя
+	RefinedAddress   string              `json:"refined_address"`
+	SearchResults    []map[string]string `json:"search_results"`
+	ExecutionSteps   []string            `json:"execution_steps"`
+	Error            string              `json:"error,omitempty"`
+}
+
+
+// =================== API-Обработчик ===================
+func handler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Read the raw request body
-	body, err := io.ReadAll(r.Body) // Replaced ioutil.ReadAll with io.ReadAll
+	// Читаем JSON-запрос
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "Error reading request body", http.StatusBadRequest)
+		http.Error(w, "Ошибка чтения тела запроса", http.StatusBadRequest)
 		return
 	}
+	defer r.Body.Close()
 
-	log.Println("Raw JSON received:", string(body)) // Log raw JSON for debugging
-
-	// Parse JSON from request
-	var requestData googlesearch.RequestData
+	// Используем структуру RequestData из пакета mapsearchg
+	var requestData mapsearchg.RequestData
 	err = json.Unmarshal(body, &requestData)
 	if err != nil {
-		log.Println("JSON Parsing Error:", err) // Log the parsing error
-		http.Error(w, "Error parsing JSON", http.StatusBadRequest)
+		http.Error(w, "Неверный формат JSON", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Parsed Request Data: %+v\n", requestData)
+	log.Printf("Получен запрос: %+v", requestData)
 
-	// Call FetchData
-	filename, result, err := googlesearch.FetchData(requestData)
+	// Логирование времени начала обработки
+	startTime := time.Now()
+
+	// 1️⃣ **Запрашиваем данные у `mapsearchg`**
+	refinedData, err := mapsearchg.SearchGooglePlaces(requestData)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Analysis error: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Ошибка в mapsearchg.SearchGooglePlaces: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Return JSON response
-	response := map[string]interface{}{
-		"filename": filename,
-		"results":  result,
+	if len(refinedData) == 0 {
+		http.Error(w, "Нет результатов в mapsearchg", http.StatusNotFound)
+		return
 	}
+
+	// Обновляем запрос с уточнённым адресом
+	updatedRequest := googlesearch.RequestData{
+		HotelName:     refinedData[0].Name,
+		Address:       refinedData[0].FormattedAddress,
+		City:          requestData.City,
+		Country:       requestData.Country,
+		PlatformsFile: requestData.PlatformsFile,
+	}
+
+	log.Printf("Уточнённое имя из mapsearchg: %s", updatedRequest.HotelName)
+	log.Printf("Уточнённый адрес из mapsearchg: %s", updatedRequest.Address)
+
+	// 2️⃣ **Запускаем `googlesearch.FetchData` с уточнёнными данными**
+	filename, searchResults, err := googlesearch.FetchData(updatedRequest)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Ошибка в googlesearch.FetchData: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Логирование времени окончания обработки
+	executionTime := time.Since(startTime)
+
+	// 3️⃣ **Формируем финальный ответ**
+	response := APIResponse{
+		RefinedHotelName: updatedRequest.HotelName, // Добавляем уточнённое имя
+		RefinedAddress:   updatedRequest.Address,
+		SearchResults:    searchResults,
+		ExecutionSteps: []string{
+			"1️⃣ Запрос в mapsearchg для получения точного имени и адреса",
+			"2️⃣ Уточнённые данные получены от mapsearchg",
+			"3️⃣ Запрос в googlesearch.FetchData с уточнёнными данными",
+			"4️⃣ Итоговый анализ завершён",
+			fmt.Sprintf("⏳ Время выполнения: %v", executionTime),
+		},
+	}
+	
+
+	// Логирование итогового результата
+	log.Printf("Итоговое время выполнения: %v", executionTime)
+	log.Printf("Результаты поиска сохранены в файл: %s", filename)
+
+	// Отправляем JSON-ответ
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	err = json.NewEncoder(w).Encode(response)
+	if err != nil {
+		log.Printf("Ошибка при отправке ответа: %v", err)
+	}
 }
 
-// Web page for user data input
+// =================== Обработчик HTML ===================
 func homeHandler(w http.ResponseWriter, r *http.Request) {
-	html := `
-<html>
-	<head><title>Review Analyzer</title></head>
-	<body>
-		<h2>Enter data for analysis:</h2>
-		<form id="analyzeForm">
-			<label>Object Type:</label>
-			<select id="platforms_file">
-				<option value="platform1.txt">Cafe</option>
-				<option value="platform2.txt">Hotel</option>
-			</select><br><br>
-			<label>Object Name:</label> <input type="text" id="hotel_name" required><br><br>
-			<label>Address (optional):</label> <input type="text" id="address"><br><br>
-			<label>City:</label> <input type="text" id="city" required><br><br>
-			<label>Country:</label> <input type="text" id="country" required><br><br>
-			<button type="button" onclick="sendRequest()">Start Analysis</button>
-		</form>
-
-		<script>
-			function sendRequest() {
-				const data = {
-					platforms_file: document.getElementById("platforms_file").value,
-					hotel_name: document.getElementById("hotel_name").value,
-					address: document.getElementById("address").value,
-					city: document.getElementById("city").value,
-					country: document.getElementById("country").value
-				};
-
-				fetch('/search', {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json'
-					},
-					body: JSON.stringify(data)
-				}).then(response => response.json())
-				  .then(result => console.log(result))
-				  .catch(error => console.error('Error:', error));
-			}
-		</script>
-	</body>
-</html>
-`
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
+	http.ServeFile(w, r, "index.html")
 }
 
-func main() {
-	http.HandleFunc("/", homeHandler)  // Input page
-	http.HandleFunc("/search", searchHandler) // API handler
+// =================== Обработчик скачивания ===================
+func downloadHandler(w http.ResponseWriter, r *http.Request) {
+	file := r.URL.Query().Get("file")
+	if file == "" {
+		http.Error(w, "Missing file parameter", http.StatusBadRequest)
+		return
+	}
 
-	log.Println("Server started on port 7001")
-	log.Fatal(http.ListenAndServe(":7001", nil))
+	// Определяем абсолютный путь к файлу
+	filePath, err := filepath.Abs(file)
+	if err != nil {
+		http.Error(w, "Invalid file path", http.StatusInternalServerError)
+		return
+	}
+
+	// Устанавливаем заголовки для скачивания
+	w.Header().Set("Content-Disposition", "attachment; filename="+filepath.Base(filePath))
+	w.Header().Set("Content-Type", "application/octet-stream")
+
+	http.ServeFile(w, r, filePath)
+}
+
+// =================== Запуск сервера ===================
+func main() {
+	http.HandleFunc("/", homeHandler)    // Загружаем HTML-страницу
+	http.HandleFunc("/process", handler) // API-обработчик
+	http.HandleFunc("/download", downloadHandler) // Новый маршрут для скачивания
+
+	log.Println("Server running on port 7001")
+	err := http.ListenAndServe(":7001", nil)
+	if err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
 }
